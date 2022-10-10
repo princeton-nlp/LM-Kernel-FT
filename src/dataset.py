@@ -40,14 +40,14 @@ class OurInputFeatures(InputFeatures):
         """Serializes this instance to a JSON string."""
         return json.dumps(dataclasses.asdict(self)) + "\n"
 
-def input_example_to_string(example, sep_token): 
+def input_example_to_string(example, sep_token):
     if example.text_b is None:
         return example.text_a
     else:
         # Warning: very simple hack here
         return example.text_a + ' ' + sep_token + ' ' + example.text_b
 
-def input_example_to_tuple(example): 
+def input_example_to_tuple(example):
     if example.text_b is None:
         if pd.isna(example.text_a) or example.text_a is None:
             return ['']
@@ -58,13 +58,13 @@ def input_example_to_tuple(example):
         return [example.text_a, example.text_b]
 
 def tokenize_multipart_input(
-    input_text_list, 
-    max_length, 
-    tokenizer, 
-    task_name=None, 
-    prompt=False, 
+    input_text_list,
+    max_length,
+    tokenizer,
+    task_name=None,
+    prompt=False,
     template=None,
-    label_word_list=None, 
+    label_word_list=None,
     first_sent_limit=None,
     other_sent_limit=None,
     gpt3=False,
@@ -103,7 +103,7 @@ def tokenize_multipart_input(
         assert template is not None
 
         special_token_mapping = {
-            'cls': tokenizer.cls_token_id, 'mask': tokenizer.mask_token_id, 'sep': tokenizer.sep_token_id, 'sep+': tokenizer.sep_token_id, 
+            'cls': tokenizer.cls_token_id, 'mask': tokenizer.mask_token_id, 'sep': tokenizer.sep_token_id, 'sep+': tokenizer.sep_token_id,
         }
         template_list = template.split('*') # Get variable list in the template
         segment_id = 0 # Current segment id. Segment id +1 if encountering sep+.
@@ -130,7 +130,7 @@ def tokenize_multipart_input(
                 new_tokens.append(label_word)
             elif part[:5] == 'sent_':
                 sent_id = int(part.split('_')[1])
-                new_tokens += enc(input_text_list[sent_id]) 
+                new_tokens += enc(input_text_list[sent_id])
             elif part[:6] == '+sent_':
                 # Add space
                 sent_id = int(part.split('_')[1])
@@ -146,7 +146,7 @@ def tokenize_multipart_input(
                 text = text[:1].lower() + text[1:]
                 new_tokens += enc(text)
             elif part[:7] == '+sentl_':
-                # Lower case the first token and add space 
+                # Lower case the first token and add space
                 sent_id = int(part.split('_')[1])
                 text = input_text_list[sent_id]
                 text = text[:1].lower() + text[1:]
@@ -171,10 +171,10 @@ def tokenize_multipart_input(
                 new_tokens += enc(' ' + text)
             else:
                 # Just natural language prompt
-                part = part.replace('_', ' ') 
+                part = part.replace('_', ' ')
                 # handle special case when T5 tokenizer might add an extra space
                 if len(part) == 1:
-                    new_tokens.append(tokenizer._convert_token_to_id(part))
+                    new_tokens.append(tokenizer.convert_tokens_to_ids(part))
                 else:
                     new_tokens += enc(part)
 
@@ -240,9 +240,12 @@ def tokenize_multipart_input(
 
     # Find mask token
     if prompt:
+        assert tokenizer.mask_token_id in input_ids, \
+            "Mask token not found for input: {} {}".format(input_text_list, input_ids)
         mask_pos = [input_ids.index(tokenizer.mask_token_id)]
         # Make sure that the masked position is inside the max_length
         assert mask_pos[0] < max_length
+
 
     result = {'input_ids': input_ids, 'attention_mask': attention_mask}
     if 'BERT' in type(tokenizer).__name__:
@@ -259,12 +262,15 @@ def tokenize_multipart_input(
 class FewShotDataset(torch.utils.data.Dataset):
     """Few-shot dataset."""
 
-    def __init__(self, args, tokenizer, cache_dir=None, mode="train", use_demo=False):
+    def __init__(self, args, tokenizer, cache_dir=None, mode="train", use_demo=False, order_by_labels=False, batch_size=1):
         self.args = args
         self.task_name = args.task_name
+
         self.processor = processors_mapping[args.task_name]
+
         self.tokenizer = tokenizer
         self.mode = mode
+        self.obl = order_by_labels
 
         # If not using demonstrations, use use_demo=True
         self.use_demo = use_demo
@@ -275,8 +281,7 @@ class FewShotDataset(torch.utils.data.Dataset):
         # Get label list and (for prompt) label word list
         self.label_list = self.processor.get_labels()
         self.num_labels = len(self.label_list)
-        if args.prompt:
-            assert args.mapping is not None
+        if args.prompt and args.mapping is not None:
             self.label_to_word = eval(args.mapping)
 
             for key in self.label_to_word:
@@ -284,11 +289,11 @@ class FewShotDataset(torch.utils.data.Dataset):
                 if self.label_to_word[key][0] not in ['<', '[', '.', ',']:
                     # Make sure space+word is in the vocabulary
                     assert len(tokenizer.tokenize(' ' + self.label_to_word[key])) == 1
-                    self.label_to_word[key] = tokenizer._convert_token_to_id(tokenizer.tokenize(' ' + self.label_to_word[key])[0])
+                    self.label_to_word[key] = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(' ' + self.label_to_word[key])[0])
                 else:
-                    self.label_to_word[key] = tokenizer._convert_token_to_id(self.label_to_word[key])
-                logger.info("Label {} to word {} ({})".format(key, tokenizer._convert_id_to_token(self.label_to_word[key]), self.label_to_word[key]))
-            
+                    self.label_to_word[key] = tokenizer.convert_tokens_to_ids(self.label_to_word[key])
+                logger.info("Label {} to word {} ({})".format(key, tokenizer.convert_ids_to_tokens(self.label_to_word[key]), self.label_to_word[key]))
+
             if len(self.label_list) > 1:
                 self.label_word_list = [self.label_to_word[label] for label in self.label_list]
             else:
@@ -299,10 +304,10 @@ class FewShotDataset(torch.utils.data.Dataset):
             self.label_to_word = None
             self.label_word_list = None
 
-        # Multiple sampling: when using demonstrations, we sample different combinations of demonstrations during 
+        # Multiple sampling: when using demonstrations, we sample different combinations of demonstrations during
         # inference and aggregate the results by averaging the logits. The number of different samples is num_sample.
         if (mode == "train") or not self.use_demo:
-            # We do not do multiple sampling when not using demonstrations or when it's the training mode 
+            # We do not do multiple sampling when not using demonstrations or when it's the training mode
             self.num_sample = 1
         else:
             self.num_sample = args.num_sample
@@ -311,18 +316,20 @@ class FewShotDataset(torch.utils.data.Dataset):
         if args.prompt and args.template_list is not None:
             logger.info("There are %d templates. Multiply num_sample by %d" % (len(args.template_list), len(args.template_list)))
             self.num_sample *= len(args.template_list)
-                
+
         logger.info("Total num_sample for mode %s: %d" % (mode, self.num_sample))
 
         # Load cache
         # Cache name distinguishes mode, task name, tokenizer, and length. So if you change anything beyond these elements, make sure to clear your cache.
+        obl_str = f'_batchedkernel_{self.args.kernel_batching_size}' if self.obl else ''
         cached_features_file = os.path.join(
             cache_dir if cache_dir is not None else args.data_dir,
-            "cached_{}_{}_{}_{}".format(
+            "cached_{}_{}_{}_{}{}".format(
                 mode,
                 tokenizer.__class__.__name__,
                 str(args.max_seq_length),
                 args.task_name,
+                obl_str
             ),
         )
 
@@ -385,10 +392,10 @@ class FewShotDataset(torch.utils.data.Dataset):
 
             assert len(self.support_emb) == len(self.support_examples)
             assert len(self.query_emb) == len(self.query_examples)
- 
+
         # Size is expanded by num_sample
         self.size = len(self.query_examples) * self.num_sample
-        
+
         # Prepare examples (especially for using demonstrations)
         support_indices = list(range(len(self.support_examples)))
         self.example_idx = []
@@ -480,7 +487,7 @@ class FewShotDataset(torch.utils.data.Dataset):
         selection = []
 
         if self.args.gpt3_in_context_head or self.args.gpt3_in_context_tail:
-            # For GPT-3's in-context learning, we sample gpt3_in_context_num demonstrations randomly. 
+            # For GPT-3's in-context learning, we sample gpt3_in_context_num demonstrations randomly.
             order = np.random.permutation(len(context_examples))
             for i in range(min(self.args.gpt3_in_context_num, len(order))):
                 selection.append(context_examples[order[i]])
@@ -498,9 +505,9 @@ class FewShotDataset(torch.utils.data.Dataset):
                     counts[label] += 1
                 if sum(counts.values()) == len(counts) * max_demo_per_label:
                     break
-        
+
             assert len(selection) > 0
-        
+
         return selection
 
     def __len__(self):
@@ -531,7 +538,7 @@ class FewShotDataset(torch.utils.data.Dataset):
             )
         else:
             features = self.features[i]
-            
+
         return features
 
     def get_labels(self):
@@ -552,7 +559,7 @@ class FewShotDataset(torch.utils.data.Dataset):
         """
         Returns a list of processed "InputFeatures".
         """
-        max_length = self.args.max_seq_length    
+        max_length = self.args.max_seq_length
 
         # Prepare labels
         label_map = {label: i for i, label in enumerate(label_list)} # Mapping the label names to label ids
@@ -582,7 +589,6 @@ class FewShotDataset(torch.utils.data.Dataset):
                 label_word_list=label_word_list,
                 first_sent_limit=self.args.first_sent_limit,
                 other_sent_limit=self.args.other_sent_limit,
-                truncate_head=self.args.truncate_head,
             )
             features = OurInputFeatures(**inputs, label=example_label)
 
@@ -598,9 +604,9 @@ class FewShotDataset(torch.utils.data.Dataset):
                 # When using GPT-3's in-context learning, take the maximum tokenization length of the model (512)
                 max_length = 512
 
-            # All input sentences, including the query and the demonstrations, are put into augmented_examples, 
+            # All input sentences, including the query and the demonstrations, are put into augmented_examples,
             # and are numbered based on the order (starting from 0). For single sentence tasks, the input (query)
-            # is the sentence 0; for sentence-pair tasks, the input (query) is the sentence 0 and 1. Note that for GPT-3's 
+            # is the sentence 0; for sentence-pair tasks, the input (query) is the sentence 0 and 1. Note that for GPT-3's
             # in-context learning, the input (query) might be at the end instead of the beginning (gpt3_in_context_head)
             augmented_example = []
             query_text = input_example_to_tuple(example) # Input sentence list for query

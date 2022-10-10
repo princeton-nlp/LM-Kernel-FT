@@ -1,4 +1,4 @@
-########## The following part is copied from Transformers' trainer (3.4.0) ########## 
+########## The following part is copied from Transformers' trainer (3.4.0) ##########
 
 # coding=utf-8
 # Copyright 2020-present the HuggingFace Inc. team.
@@ -38,58 +38,30 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import RandomSampler, SequentialSampler
 
 import transformers
-from transformers.data.data_collator import DataCollator, DataCollatorWithPadding, default_data_collator
-from transformers.file_utils import WEIGHTS_NAME, is_datasets_available, is_in_notebook, is_torch_tpu_available
+from transformers.file_utils import is_datasets_available, is_in_notebook, is_torch_tpu_available
 from transformers.integrations import (
-    default_hp_search_backend,
     is_comet_available,
     is_optuna_available,
     is_ray_available,
     is_tensorboard_available,
     is_wandb_available,
-    run_hp_search_optuna,
-    run_hp_search_ray,
 )
-from transformers.modeling_auto import MODEL_FOR_QUESTION_ANSWERING_MAPPING
-from transformers.modeling_utils import PreTrainedModel
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
-from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer_callback import (
-    CallbackHandler,
     DefaultFlowCallback,
-    PrinterCallback,
     ProgressCallback,
-    TrainerCallback,
-    TrainerControl,
-    TrainerState,
-)
-from transformers.trainer_pt_utils import (
-    DistributedTensorGatherer,
-    SequentialDistributedSampler,
-    distributed_broadcast_scalars,
-    distributed_concat,
-    get_tpu_sampler,
-    nested_concat,
-    nested_detach,
-    nested_numpify,
-    nested_xla_mesh_reduce,
-    reissue_pt_warnings,
 )
 from transformers.trainer_utils import (
-    PREFIX_CHECKPOINT_DIR,
-    BestRun,
-    EvalPrediction,
-    HPSearchBackend,
-    PredictionOutput,
-    TrainOutput,
     default_compute_objective,
-    default_hp_space,
-    set_seed,
 )
 from transformers.training_args import TrainingArguments
 from transformers.utils import logging
+from transformers.trainer_utils import TrainOutput
 
 from tqdm import tqdm, trange
+from torch.optim import SGD
+
+from src.linearhead_trainer import LinearHeadTrainer
 
 _use_native_amp = False
 _use_apex = False
@@ -150,7 +122,7 @@ if is_ray_available():
 
 logger = logging.get_logger(__name__)
 
-########## The above part is copied from Transformers' trainer (3.4.0) ########## 
+########## The above part is copied from Transformers' trainer (3.4.0) ##########
 
 def default_dev_objective(metrics):
     """
@@ -168,10 +140,10 @@ def default_dev_objective(metrics):
         return metrics["eval_pearson"]
     elif "eval_acc" in metrics:
         return metrics["eval_acc"]
- 
+
     raise Exception("No metric founded for {}".format(metrics))
 
-class Trainer(transformers.Trainer):
+class Trainer(LinearHeadTrainer):
     """
     Adding some functions based on Transformers' Trainer class.
     """
@@ -214,12 +186,20 @@ class Trainer(transformers.Trainer):
                     "weight_decay": 0.0,
                 },
             ]
-            self.optimizer = AdamW(
-                optimizer_grouped_parameters,
-                lr=self.args.learning_rate,
-                betas=(self.args.adam_beta1, self.args.adam_beta2),
-                eps=self.args.adam_epsilon,
-            )
+            if self.args.optimizer == 'adam':
+                self.optimizer = AdamW(
+                    optimizer_grouped_parameters,
+                    lr=self.args.learning_rate,
+                    betas=(self.args.adam_beta1, self.args.adam_beta2),
+                    eps=self.args.adam_epsilon,
+                )
+            elif self.args.optimizer == 'sgd':
+                self.optimizer = SGD(
+                    optimizer_grouped_parameters,
+                    lr=self.args.learning_rate
+                )
+            else:
+                raise NotImplementedError
         if self.lr_scheduler is None:
             self.lr_scheduler = get_linear_schedule_with_warmup(
                 self.optimizer, num_warmup_steps=self.args.warmup_steps, num_training_steps=num_training_steps
@@ -232,13 +212,16 @@ class Trainer(transformers.Trainer):
         The training logic is directly borrowed from transformers.Trainer (version 3.0.2).
         Add early stopping.
         """
+        if self.args.from_linearhead and model_path is None:
+            super().train(model_path, dev_objective) # Train output layer using LinearHeadTrainer
+
         self.best_dir = None
         self.objective = -float("inf")
         self.dev_objective = dev_objective if dev_objective is not None else default_dev_objective
 
         # Data loading.
         train_dataloader = self.get_train_dataloader()
-        num_update_steps_per_epoch = len(train_dataloader) // self.args.gradient_accumulation_steps 
+        num_update_steps_per_epoch = len(train_dataloader) // self.args.gradient_accumulation_steps
         if num_update_steps_per_epoch == 0:
             num_update_steps_per_epoch = 1
         if self.args.max_steps > 0:
@@ -328,10 +311,7 @@ class Trainer(transformers.Trainer):
         tr_loss = torch.tensor(0.0).to(self.args.device)
         logging_loss_scalar = 0.0
         model.zero_grad()
-        train_iterator = trange(
-            epochs_trained, int(num_train_epochs), desc="Epoch", disable=not self.is_local_master()
-        )
-        for epoch in train_iterator:
+        for epoch in range(epochs_trained, int(num_train_epochs)):
             if isinstance(train_dataloader, DataLoader) and isinstance(train_dataloader.sampler, DistributedSampler):
                 train_dataloader.sampler.set_epoch(epoch)
 
@@ -339,7 +319,7 @@ class Trainer(transformers.Trainer):
                 parallel_loader = pl.ParallelLoader(train_dataloader, [self.args.device]).per_device_loader(
                     self.args.device
                 )
-                epoch_iterator = tqdm(parallel_loader, desc="Iteration", disable=not self.is_local_master())
+                epoch_iterator = tqdm(parallel_loader, desc="Iteration", disable=not self.is_local_process_zero())
             else:
                 epoch_iterator = tqdm(train_dataloader, desc="Iteration", disable=True)
 
@@ -347,7 +327,7 @@ class Trainer(transformers.Trainer):
             if self.args.past_index >= 0:
                 self._past = None
 
-            for step, inputs in enumerate(epoch_iterator):
+            for step, inputs in enumerate(tqdm(epoch_iterator, desc=f'Steps in epoch {epoch}', disable=not self.is_local_process_zero())):
 
                 # Skip past any already trained steps if resuming training
                 if steps_trained_in_current_epoch > 0:
@@ -368,6 +348,12 @@ class Trainer(transformers.Trainer):
                         norm = torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), self.args.max_grad_norm)
                     else:
                         norm = torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.max_grad_norm)
+
+
+                    if self.args.optimizer_variant == 'signgd':
+                        for n,p in model.named_parameters():
+                            if p.grad is not None:
+                                p.grad = torch.sign(p.grad)
 
                     if transformers.is_torch_tpu_available():
                         xm.optimizer_step(optimizer)
@@ -399,41 +385,42 @@ class Trainer(transformers.Trainer):
 
                         self.log(logs)
 
-                    # ----------------------------------------------------------------------
-                    # BEGIN CHANGES.
-                    # ----------------------------------------------------------------------
-
-                    metrics = None
-                    if self.args.evaluate_during_training and self.global_step % self.args.eval_steps == 0:
-                        output = self.evaluate()
-                        metrics = output.metrics
-                        objective = self.dev_objective(metrics)
-                        if objective > self.objective:
-                            logger.info("Best dev result: {}".format(objective))
-                            self.objective = objective
-                            self.save_model(self.args.output_dir) 
-
-                    # ----------------------------------------------------------------------
-                    # END CHANGES.
-                    # ----------------------------------------------------------------------
-
-
                 if self.args.max_steps > 0 and self.global_step > self.args.max_steps:
                     epoch_iterator.close()
                     break
             if self.args.max_steps > 0 and self.global_step > self.args.max_steps:
-                train_iterator.close()
+                # train_iterator.close()
                 break
             if self.args.tpu_metrics_debug or self.args.debug:
                 # tpu-comment: Logging debug metrics for PyTorch/XLA (compile, execute times, ops, etc.)
                 xm.master_print(met.metrics_report())
+
+
+            # ----------------------------------------------------------------------
+            # BEGIN CHANGES.
+            # ----------------------------------------------------------------------
+
+            metrics = None
+            if self.args.evaluate_during_training: #and self.global_step % self.args.eval_steps == 0:
+                output = self.evaluate()
+                metrics = output.metrics
+                objective = self.dev_objective(metrics)
+                if objective > self.objective:
+                    logger.info("Best dev result: {}".format(objective))
+                    self.objective = objective
+                    self.save_model(self.args.output_dir)
+
+            # ----------------------------------------------------------------------
+            # END CHANGES.
+            # ----------------------------------------------------------------------
+
 
         if self.args.past_index and hasattr(self, "_past"):
             # Clean the state at the end of training
             delattr(self, "_past")
 
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
-        return TrainOutput(self.global_step, tr_loss / self.global_step), self.objective
+        return TrainOutput(self.global_step, tr_loss / self.global_step, metrics), self.objective
 
 
     """

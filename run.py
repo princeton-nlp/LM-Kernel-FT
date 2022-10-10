@@ -5,18 +5,20 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Union
 import torch
 
 import numpy as np
 
 import transformers
-from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer, EvalPrediction
+from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer, EvalPrediction, PreTrainedTokenizerBase
 from transformers import GlueDataTrainingArguments as DataTrainingArguments
 from transformers import HfArgumentParser, TrainingArguments, set_seed
 
+from src.linearhead_trainer import LinearHeadTrainer
+from kernel_trainer import KernelTrainerFunc
 from src.dataset import FewShotDataset
-from src.models import BertForPromptFinetuning, RobertaForPromptFinetuning, resize_token_type_embeddings
+from src.models import ModelForPromptFinetuning, resize_token_type_embeddings
 from src.trainer import Trainer
 from src.processors import processors_mapping, num_labels_mapping, output_modes_mapping, compute_metrics_mapping, bound_mapping
 
@@ -60,6 +62,28 @@ class ModelArguments:
     random_segment: bool = field(
         default=False,
         metadata={"help": "Whether to reinitialize the token type embeddings (only for BERT)."}
+    )
+    l2_loss: bool = field(
+        default=False,
+        metadata={"help": "Whether to use L2 loss (only makes a difference in standard FT)."}
+    )
+    use_task_word: bool = field(
+        default=False,
+        metadata={'help': 'uses the task words MLM logit for kernel computation'}
+    )
+
+    # LoRA arguments: only for BERT-type model
+    apply_lora: bool = field(
+        default=False,
+        metadata={'help': 'use LoRA for finetuning'}
+    )
+    lora_alpha: int = field(
+        default=None,
+        metadata={'help': 'initialization scale for one of the low rank matrices in lora'}
+    )
+    lora_r: int = field(
+        default=None,
+        metadata={'help': 'inner rank for lora matrices'}
     )
 
 @dataclass
@@ -112,7 +136,7 @@ class DynamicDataTrainingArguments(DataTrainingArguments):
         default=None,
         metadata={"help": "Path to a txt file that stores all the prompts (templates and mappings), one per line"}
     )
- 
+
     template_id: int = field(
         default=None,
         metadata={"help": "Template id if using template_path"}
@@ -212,9 +236,20 @@ class DynamicDataTrainingArguments(DataTrainingArguments):
         metadata={"help": "(DO NOT List of templates (only initialized after the program starts."}
     )
 
+    # kernel arguments
+    kernel_batching_size: int = field(
+        default=1,
+        metadata={'help': 'batch size for batched kernel computation'}
+    )
+
 
 @dataclass
 class DynamicTrainingArguments(TrainingArguments):
+    evaluate_during_training: bool = field(
+        default=False,
+        metadata={"help": "Whether to run evaluation during training or at the."}
+    )
+
     # For ensemble
     array_id: int = field(
         default=-1,
@@ -257,17 +292,166 @@ class DynamicTrainingArguments(TrainingArguments):
         default=False,
         metadata={"help": "No test"}
     )
+    optimizer: str = field(
+        default='adam',
+        metadata={'help': 'choose sgd or adam. default is adam'}
+    )
+    optimizer_variant: str = field(
+        default='',
+        metadata={'help': 'define variants on optimizer: signgd'}
+    )
+
+    trainer: str = field(
+        default="standard",
+        metadata={"help": "Pick from {standard, kernel, linearhead}"}
+    )
+    from_linearhead: bool = field(
+        default=False,
+        metadata={"help": "Whether to initialize head with the linearhead solution. Works for both normal and kernel trainer."}
+    )
+    random_model_init: bool = field(
+        default=False,
+        metadata={'help': 'reinit the model randomly'}
+    )
+    sweep: bool = field(
+        default=False,
+        metadata={'help': 'configures the output directories to be informative when running W&B sweep'}
+    )
+
+    kernel_formula: str = field(
+        default='sgd'
+    )
+    kernel_solver: str = field(
+        default="lstsq",
+        metadata={"help": "choose kernel solver from {lstsq, svr, svc (only with --binary_classification)}"}
+    )
+    load_kernels: str = field(
+        default=None,
+        metadata={'help': 'when specified, loads the kernels from the folder given here'}
+    )
+    overwrite_kernels: bool = field(
+        default=False,
+        metadata={'help': 'when specified, overwrites the kernels in the output_dir and computes them from scratch'}
+    )
+
+    exclude_embeddings: bool = field(
+        default=False,
+        metadata={"help": "Don't use embeddings for kernel computation "}
+    )
+    exclude_head: bool = field(
+        default=False,
+        metadata={"help": "Don't use head for kernel computation "}
+    )
+    only_biases: bool = field(
+        default=False,
+        metadata={"help": "Only use bias parameters for kernel computation for BitFit-style kernel"}
+    )
+
+    kernel_regularization: float = field(
+        default=0.0,
+        metadata={"help": "Regularization constant for kernel"}
+    )
+    kernel_gamma: float = field(
+        default=1.0,
+        metadata={"help": "Gamma for asymmetric kernel solver"}
+    )
+    binary_classification: bool = field(
+        default=False,
+        metadata={"help": "If num_classes=2, convert two softmax logits to single sigmoid logit"}
+    )
+    adjust_for_init: bool = field(
+        default=False,
+        metadata={'help': 'when on, trains kernel on y-f0 and adds f0 at test time'}
+    )
+    f0_scaling: float = field(
+        default=1.0,
+        metadata={'help': 'adjust label scaling, might help with --adjust_for_init perf'}
+    )
+
+@dataclass
+class MyDataCollatorWithPadding:
+    """
+    Data collator that will dynamically pad the inputs received.
+    Args:
+        tokenizer ([`PreTrainedTokenizer`] or [`PreTrainedTokenizerFast`]):
+            The tokenizer used for encoding the data.
+        padding (`bool`, `str` or [`~utils.PaddingStrategy`], *optional*, defaults to `True`):
+            Select a strategy to pad the returned sequences (according to the model's padding side and padding index)
+            among:
+            - `True` or `'longest'` (default): Pad to the longest sequence in the batch (or no padding if only a single
+              sequence is provided).
+            - `'max_length'`: Pad to a maximum length specified with the argument `max_length` or to the maximum
+              acceptable input length for the model if that argument is not provided.
+            - `False` or `'do_not_pad'`: No padding (i.e., can output a batch with sequences of different lengths).
+        max_length (`int`, *optional*):
+            Maximum length of the returned list and optionally padding length (see above).
+        pad_to_multiple_of (`int`, *optional*):
+            If set will pad the sequence to a multiple of the provided value.
+            This is especially useful to enable the use of Tensor Cores on NVIDIA hardware with compute capability >=
+            7.5 (Volta).
+        return_tensors (`str`):
+            The type of Tensor to return. Allowable values are "np", "pt" and "tf".
+    """
+
+    tokenizer: PreTrainedTokenizerBase
+    padding: Union[bool, str] = True
+    max_length: Optional[int] = None
+    pad_to_multiple_of: Optional[int] = None
+    return_tensors: str = "pt"
+
+    def __call__(self, features):
+        mask_pos = []
+        standard_features = []
+        for item in features:
+            standard_item = {}
+            for field in ["input_ids", "label", "attention_mask", "token_type_ids"]:
+                if getattr(item, field) is not None:
+                    standard_item[field] = getattr(item, field)
+            standard_features.append(standard_item)
+            mask_pos.append(item.mask_pos)
+
+        batch = self.tokenizer.pad(
+            standard_features,
+            padding=self.padding,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors=self.return_tensors,
+        )
+
+        if any(mask_pos):
+            batch["mask_pos"] = torch.tensor(mask_pos)
+
+        if "label" in batch:
+            batch["labels"] = batch["label"]
+            del batch["label"]
+        if "label_ids" in batch:
+            batch["labels"] = batch["label_ids"]
+            del batch["label_ids"]
+        return batch
 
 
 def main():
     parser = HfArgumentParser((ModelArguments, DynamicDataTrainingArguments, DynamicTrainingArguments))
-
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    if training_args.sweep:
+        now = datetime.now()
+        dt_str = now.strftime('%m_%d_%H_%M_%S')
+        training_args.output_dir = os.path.join(training_args.output_dir, dt_str)
+
+    if model_args.apply_lora:
+        assert 'roberta' in model_args.model_name_or_path, 'LoRA only implemented for RoBERTa models'
+
+    if training_args.kernel_formula == 'asymmetric_signgd':
+        assert training_args.binary_classification, 'asymmetric solver not implemented for multi-class setting, use --binary_classification'
+
+    if training_args.optimizer_variant != '':
+        assert training_args.optimizer == 'sgd', 'variants on optimizer are only implemented for SGD'
 
     if 'prompt' in model_args.few_shot_type:
         data_args.prompt = True
@@ -295,7 +479,7 @@ def main():
                     template, mapping = line.split('\t')
                     prompt_list.append((template, mapping))
 
-            data_args.template, data_args.mapping = prompt_list[data_args.prompt_id] 
+            data_args.template, data_args.mapping = prompt_list[data_args.prompt_id]
             logger.info("Specify load the %d-th prompt: %s | %s" % (data_args.prompt_id, data_args.template, data_args.mapping))
         else:
             if data_args.template_path is not None:
@@ -360,7 +544,7 @@ def main():
     # Automatically generate template for using demonstrations
     if data_args.auto_demo and model_args.few_shot_type == 'prompt-demo':
         # GPT-3's in-context learning
-        if data_args.gpt3_in_context_head or data_args.gpt3_in_context_tail: 
+        if data_args.gpt3_in_context_head or data_args.gpt3_in_context_tail:
             logger.info("Automatically convert the template to GPT-3's in-context learning.")
             assert data_args.template_list is None
 
@@ -425,22 +609,24 @@ def main():
                 data_args.template = new_template
 
     # Create config
+    config_kwargs = {'apply_lora': model_args.apply_lora,
+                     'lora_alpha': model_args.lora_alpha,
+                     'lora_r': model_args.lora_r}
     config = AutoConfig.from_pretrained(
         model_args.config_name if model_args.config_name else model_args.model_name_or_path,
         num_labels=num_labels,
         finetuning_task=data_args.task_name,
         cache_dir=model_args.cache_dir,
+        **config_kwargs
     )
 
     if 'prompt' in model_args.few_shot_type:
-        if config.model_type == 'roberta':
-            model_fn = RobertaForPromptFinetuning
-        elif config.model_type == 'bert':
-            model_fn = BertForPromptFinetuning
-        else:
-            raise NotImplementedError
+        model_fn = ModelForPromptFinetuning
     elif model_args.few_shot_type == 'finetune':
-        model_fn = AutoModelForSequenceClassification
+        if training_args.from_linearhead:
+            model_fn = ModelForPromptFinetuning
+        else:
+            model_fn = AutoModelForSequenceClassification
     else:
         raise NotImplementedError
     special_tokens = []
@@ -454,7 +640,7 @@ def main():
 
     # Get our special datasets.
     train_dataset = (
-        FewShotDataset(data_args, tokenizer=tokenizer, mode="train", use_demo=("demo" in model_args.few_shot_type))
+        FewShotDataset(data_args, tokenizer=tokenizer, mode="train", use_demo=("demo" in model_args.few_shot_type), order_by_labels=(training_args.trainer == 'kernel'))
     )
     eval_dataset = (
         FewShotDataset(data_args, tokenizer=tokenizer, mode="dev", use_demo=("demo" in model_args.few_shot_type))
@@ -475,6 +661,8 @@ def main():
         config=config,
         cache_dir=model_args.cache_dir,
     )
+    if training_args.random_model_init:
+        model.init_weights() # reinit weights to random
 
     # For BERT, increase the size of the segment (token type) embeddings
     if config.model_type == 'bert':
@@ -482,14 +670,19 @@ def main():
         resize_token_type_embeddings(model, new_num_types=10, random_segment=model_args.random_segment)
 
     # Pass dataset and argument information to the model
-    if data_args.prompt:
-        model.label_word_list = torch.tensor(train_dataset.label_word_list).long().cuda()
+    if train_dataset.label_word_list is not None:
+        model.label_word_list = torch.tensor(train_dataset.label_word_list).long().to(training_args.device)
     if output_modes_mapping[data_args.task_name] == 'regression':
         # lower / upper bounds
         model.lb, model.ub = bound_mapping[data_args.task_name]
     model.model_args = model_args
     model.data_args = data_args
     model.tokenizer = tokenizer
+
+    if model_args.apply_lora:
+        for name, param in model.named_parameters():
+            if name.startswith('roberta') and "lora" not in name:
+                param.requires_grad_(False)
 
     # Build metric
     def build_compute_metrics_fn(task_name: str) -> Callable[[EvalPrediction], Dict]:
@@ -498,16 +691,18 @@ def main():
             # We average the logits over each sample for using demonstrations.
             predictions = p.predictions
             num_logits = predictions.shape[-1]
-            logits = predictions.reshape([eval_dataset.num_sample, -1, num_logits])
+
+            num_sample = test_dataset.num_sample if eval_dataset is None else eval_dataset.num_sample
+            logits = predictions.reshape([num_sample, -1, num_logits])
             logits = logits.mean(axis=0)
-            
+
             if num_logits == 1:
                 preds = np.squeeze(logits)
             else:
                 preds = np.argmax(logits, axis=1)
 
             # Just for sanity, assert label ids are the same.
-            label_ids = p.label_ids.reshape([eval_dataset.num_sample, -1])
+            label_ids = p.label_ids.reshape([num_sample, -1])
             label_ids_avg = label_ids.mean(axis=0)
             label_ids_avg = label_ids_avg.astype(p.label_ids.dtype)
             assert (label_ids_avg - label_ids[0]).mean() < 1e-2
@@ -516,44 +711,57 @@ def main():
             return compute_metrics_mapping[task_name](task_name, preds, label_ids)
 
         return compute_metrics_fn
-    
+
     # Initialize our Trainer
-    trainer = Trainer(
+    trainer_classes = {
+        "standard": Trainer,
+        "linearhead": LinearHeadTrainer,
+        "kernel": KernelTrainerFunc,
+    }
+    trainer_class = trainer_classes[training_args.trainer]
+    trainer_kwargs = {}
+    if training_args.trainer == 'kernel':
+        trainer_kwargs['kernel_batching_size'] = data_args.kernel_batching_size
+    trainer = trainer_class(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        compute_metrics=build_compute_metrics_fn(data_args.task_name)
+        compute_metrics=build_compute_metrics_fn(data_args.task_name),
+        **trainer_kwargs
     )
 
     # Training
     if training_args.do_train:
         trainer.train(model_path=model_args.model_name_or_path if os.path.isdir(model_args.model_name_or_path) else None)
         # Use the early stop, so do not save the model in the end (unless specify save_at_last)
-        if training_args.save_at_last:
-            trainer.save_model(training_args.output_dir)
- 
-        if trainer.is_world_master():
-            tokenizer.save_pretrained(training_args.output_dir)
-            torch.save(model_args, os.path.join(training_args.output_dir, "model_args.bin"))
-            torch.save(data_args, os.path.join(training_args.output_dir, "data_args.bin"))
-        
-        # Reload the best checkpoint (for eval)
-        model = model_fn.from_pretrained(training_args.output_dir)
-        model = model.to(training_args.device)
-        trainer.model = model
-        if data_args.prompt:
-            model.label_word_list = torch.tensor(train_dataset.label_word_list).long().cuda()
-        if output_modes_mapping[data_args.task_name] == 'regression':
-            # lower / upper bounds
-            model.lb, model.ub = bound_mapping[data_args.task_name]
-        model.model_args = model_args
-        model.data_args = data_args
-        model.tokenizer = tokenizer
+
+        if training_args.trainer == "standard":
+            if training_args.save_at_last:
+                trainer.save_model(training_args.output_dir)
+
+            if trainer.is_world_process_zero():
+                tokenizer.save_pretrained(training_args.output_dir)
+                torch.save(model_args, os.path.join(training_args.output_dir, "model_args.bin"))
+                torch.save(data_args, os.path.join(training_args.output_dir, "data_args.bin"))
+
+            # Reload the best checkpoint (for eval)
+            model = model_fn.from_pretrained(training_args.output_dir)
+            model = model.to(training_args.device)
+            trainer.model = model
+            if train_dataset.label_word_list is not None:
+                model.label_word_list = torch.tensor(train_dataset.label_word_list).long().to(training_args.device)
+            if output_modes_mapping[data_args.task_name] == 'regression':
+                # lower / upper bounds
+                model.lb, model.ub = bound_mapping[data_args.task_name]
+            model.model_args = model_args
+            model.data_args = data_args
+            model.tokenizer = tokenizer
 
     # Evaluation
     final_result = {
         'time': str(datetime.today()),
+        'output_dir': training_args.output_dir
     }
 
     eval_results = {}
@@ -565,12 +773,12 @@ def main():
         for eval_dataset in eval_datasets:
             trainer.compute_metrics = build_compute_metrics_fn(eval_dataset.args.task_name)
             output = trainer.evaluate(eval_dataset=eval_dataset)
-            eval_result = output.metrics 
+            eval_result = output.metrics
 
             output_eval_file = os.path.join(
                 training_args.output_dir, f"eval_results_{eval_dataset.args.task_name}.txt"
             )
-            if trainer.is_world_master():
+            if trainer.is_world_process_zero():
                 with open(output_eval_file, "w") as writer:
                     logger.info("***** Eval results {} *****".format(eval_dataset.args.task_name))
                     for key, value in eval_result.items():
@@ -597,7 +805,7 @@ def main():
             output_test_file = os.path.join(
                 training_args.output_dir, f"test_results_{test_dataset.args.task_name}.txt"
             )
-            if trainer.is_world_master():
+            if trainer.is_world_process_zero():
                 with open(output_test_file, "w") as writer:
                     logger.info("***** Test results {} *****".format(test_dataset.args.task_name))
                     for key, value in test_result.items():
@@ -613,15 +821,20 @@ def main():
 
             test_results.update(test_result)
 
-    with FileLock('log.lock'):
-        with open('log', 'a') as f:
-            final_result.update(vars(model_args))
-            final_result.update(vars(training_args))
-            final_result.update(vars(data_args))
-            if 'evaluation_strategy' in final_result:
-                final_result.pop('evaluation_strategy')
-            f.write(str(final_result) + '\n')
-    
+
+    if trainer.is_world_process_zero():
+        with FileLock('log.lock'):
+            with open('log', 'a') as f:
+                final_result.update(vars(model_args))
+                final_result.update(vars(training_args))
+                final_result.update(vars(data_args))
+                if 'evaluation_strategy' in final_result:
+                    final_result.pop('evaluation_strategy')
+                f.write(str(final_result) + '\n')
+
+    logger.info('****** Output Dir *******')
+    logger.info(training_args.output_dir)
+
     return eval_results
 
 if __name__ == "__main__":
