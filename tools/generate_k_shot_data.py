@@ -78,16 +78,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--k", type=int, default=16,
         help="Training examples for each class.")
-    parser.add_argument("--task", type=str, nargs="+", 
+    parser.add_argument("--task", type=str, nargs="+",
         default=['SST-2', 'sst-5', 'mr', 'cr', 'mpqa', 'subj', 'trec', 'CoLA', 'MRPC', 'QQP', 'STS-B', 'MNLI', 'SNLI', 'QNLI', 'RTE'],
         help="Task names")
-    parser.add_argument("--seed", type=int, nargs="+", 
+    parser.add_argument("--seed", type=int, nargs="+",
         default=[100, 13, 21, 42, 87],
         help="Random seeds")
 
     parser.add_argument("--data_dir", type=str, default="data/original", help="Path to original data")
     parser.add_argument("--output_dir", type=str, default="data", help="Output path")
-    parser.add_argument("--mode", type=str, default='k-shot', choices=['k-shot', 'k-shot-10x'], help="k-shot or k-shot-10x (10x dev set)") 
+    parser.add_argument("--mode", type=str, default='k-shot', choices=['k-shot', 'k-shot-10x', 'k-shot-1k-test'], help="k-shot or k-shot-10x (10x dev set)")
 
     args = parser.parse_args()
     args.output_dir = os.path.join(args.output_dir, args.mode)
@@ -105,11 +105,11 @@ def main():
             # Shuffle the training set
             print("| Task = %s" % (task))
             if task in ["MNLI", "MRPC", "QNLI", "QQP", "RTE", "SNLI", "SST-2", "STS-B", "WNLI", "CoLA"]:
-                # GLUE style 
+                # GLUE style
                 train_header, train_lines = split_header(task, dataset["train"])
                 np.random.shuffle(train_lines)
             else:
-                # Other datasets 
+                # Other datasets
                 train_lines = dataset['train'].values.tolist()
                 np.random.shuffle(train_lines)
 
@@ -126,14 +126,25 @@ def main():
                     if split.startswith("train"):
                         continue
                     split = split.replace('dev', 'test')
+
+                    test_header, test_lines = split_header(task, lines)
+                    if '1k-test' in args.mode and len(test_lines) > 1000:
+                        np.random.seed(42)
+                        np.random.shuffle(test_lines)
+                        test_lines = test_lines[:1000]
                     with open(os.path.join(setting_dir, f"{split}.tsv"), "w") as f:
-                        for line in lines:
+                        for line in test_header:
+                            f.write(line)
+                        for line in test_lines:
                             f.write(line)
             else:
                 # Other datasets
                 # Use the original test sets
-                dataset['test'].to_csv(os.path.join(setting_dir, 'test.csv'), header=False, index=False)  
-            
+                test_dataset = dataset['test']
+                if '1k-test' in args.mode and len(test_dataset.index) > 1000:
+                    test_dataset = test_dataset.sample(n=1000, random_state=42)
+                test_dataset.to_csv(os.path.join(setting_dir, 'test.csv'), header=False, index=False)
+
             # Get label list for balanced sampling
             label_list = {}
             for line in train_lines:
@@ -142,7 +153,7 @@ def main():
                     label_list[label] = [line]
                 else:
                     label_list[label].append(line)
-            
+
             if task in ["MNLI", "MRPC", "QNLI", "QQP", "RTE", "SNLI", "SST-2", "STS-B", "WNLI", "CoLA"]:
                 with open(os.path.join(setting_dir, "train.tsv"), "w") as f:
                     for line in train_header:
@@ -167,7 +178,7 @@ def main():
                         new_train.append(line)
                 new_train = DataFrame(new_train)
                 new_train.to_csv(os.path.join(setting_dir, 'train.csv'), header=False, index=False)
-            
+
                 new_dev = []
                 for label in label_list:
                     dev_rate = 11 if '10x' in args.mode else 2
