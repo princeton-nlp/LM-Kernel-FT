@@ -65,7 +65,7 @@ The SGD kernels also include 6 datasets (SST-2, MR, CR, QNLI, RTE, QQP) for 512-
 Please cite our work if you make use of our code or our pre-computed kernels in your work:
 
 ```bibtex
-@article{malladi2022kernelbased,
+@article{malladi2022kernel,
       title={A Kernel-Based View of Language Model Fine-Tuning},
       author={Malladi, Sadhika and Wettig, Alexander and Yu, Dingli and Chen, Danqi and Arora, Sanjeev},
       journal={arXiv preprint arXiv:2210.05643},
