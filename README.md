@@ -31,6 +31,8 @@ for K in 16 64 512; do
 done
 ```
 
+This follows LM-BFF, but `download_dataset.sh` additionally rebalances the `cr` dataset and uses the GLUE version of the SST-2 dataset. Additionally `k-shot-1k-test` limits test datasets to 1k examples for faster evaluation.
+
 **NOTE**: During training, the model will generate/load cache files in the data folder. If your data have changed, make sure to clean all the cache files (starting with "cache").
 
 ## Run the code
@@ -43,10 +45,10 @@ TAG=kernel-prompting TRAINER=kernel TASK=SST-2 SEED=42 MODEL=roberta-base bash r
 The templates and label word mappings are already defined, so you only need to set hyper-parameters and `TAG` (you can use whatever tag you want and it just makes finding results easier). See `run_fewshot.sh` for more options. Besides, you can easily add extra arguments:
 
 ```bash
-TAG=kernel-prompting TRAINER=kernel TASK=SST-2 SEED=42 MODEL=roberta-base bash run_fewshot.sh \
+NUM_GPU=4 TAG=kernel-prompting TRAINER=kernel TASK=SST-2 SEED=42 MODEL=roberta-base bash run_fewshot.sh \
     --kernel_formula signgd --kernel_solver logistic  --per_device_train_batch_size 2 --per_device_eval_batch_size 4
 ```
-This uses the SignGD kernel formula and a logistic kernel solver (the default is least-squares regression) and uses batch sizes 2 and 4 along the two axes of the kernel matrices respectively.
+This splits the kernel computation across 4 GPUs and uses the SignGD kernel formula and a logistic kernel solver (the default is least-squares regression) and uses batch sizes 2 and 4 along the two axes of the kernel matrices respectively.
 
 For more advanced use cases, such as [how to aggregate results over multiple runs](https://github.com/princeton-nlp/LM-BFF#experiments-with-multiple-runs), [zero-shot experiments](https://github.com/princeton-nlp/LM-BFF#zero-shot-experiments) or [writing your own prompt formats](https://github.com/princeton-nlp/LM-BFF#how-to-design-your-own-templates), we refer to the README in the LM-BFF repo.
 Note that we deleted some tools to do automatic prompt and label search that are unrelated to our paper.
@@ -59,6 +61,9 @@ Here are the links for downloading our pre-computed kernels:
 
 The provided kernels were computed with RoBERTa-base for 12 datasets (SST-2, MR, CR, MPQA, Subj, TREC, MNLI, SNLI, QNLI, RTE, MRPC, QQP) over 5 seeds on both 16-shot and 64-shot datasets, where k-shot is the number of training/validation examples per label.
 The SGD kernels also include 6 datasets (SST-2, MR, CR, QNLI, RTE, QQP) for 512-shot datasets.
+
+For each task and data split, we include separate files for training, development, test kernel matrices. Each file can be read using `torch.load` and contains a tuple of (kernel matrix, labels),
+and the kernel matrix has the shape of [training examples, training logits, X examples, X logits], where X dataset is given by the file name (train, dev or test).
 
 ## Citation
 

@@ -1,14 +1,14 @@
 #!/bin/bash
 
 # Main settings with default values
-TASK=${TASK:-"SST-2"}
-SEED=${SEED:-13}
-K=${K:-16}
-MODEL=${MODEL:-"roberta-base"}
-TYPE=${TYPE:-"prompt"}
-TRAINER=${TRAINER:-"standard"}
-TAG=${TAG:-}
-NUM_GPU=${NUM_GPU:-4}
+TASK=${TASK:-"SST-2"}           # see all the options in the "cases" below
+SEED=${SEED:-13}                # random seed and also data seed, by default the data split seeds are {13, 21, 42, 87, 100}
+K=${K:-16}                      # choose from {16, 64, 512} by default
+MODEL=${MODEL:-"roberta-base"}  # pick a RoBERTa or BERT model
+TYPE=${TYPE:-"prompt"}          # fine-tuning setting, choose from "finetune" and "prompt"
+TRAINER=${TRAINER:-"standard"}  # choose from "standard", "kernel" and "linearhead"
+TAG=${TAG:-}                    # set a tag to distinguish and aggregate runs in the log
+NUM_GPU=${NUM_GPU:-1}           # by default use 1 GPU, set to 0 for CPU-only training
 
 
 TASK_EXTRA=""
@@ -91,7 +91,7 @@ ALL_ARGS_TOGETHER="
     --per_device_train_batch_size 1
     --max_seq_length 128
     --seed $SEED
-    --do_eval --do_predict
+    --do_eval --do_predict --do_train
     --trainer $TRAINER
     $TASK_EXTRA
     $LOAD_KERNELS
