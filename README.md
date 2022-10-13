@@ -55,9 +55,9 @@ Note that we deleted some tools to do automatic prompt and label search that are
 
  ## Download our pre-computed kernels
 Here are the links for downloading our pre-computed kernels:
-* [SGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/sgd.zip)
-* [SignGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/signgd.zip)
-* [Asymmetric-SignGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/asymmetric_signgd.zip)
+* [SGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/kernels-zipped/roberta-base/sgd.zip)
+* [SignGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/kernels-zipped/roberta-base/signgd.zip)
+* [Asymmetric-SignGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/kernels-zipped/roberta-base/asymmetric_signgd.zip)
 
 The provided kernels were computed with RoBERTa-base for 12 datasets (SST-2, MR, CR, MPQA, Subj, TREC, MNLI, SNLI, QNLI, RTE, MRPC, QQP) over 5 seeds on both 16-shot and 64-shot datasets, where k-shot is the number of training/validation examples per label.
 The SGD kernels also include 6 datasets (SST-2, MR, CR, QNLI, RTE, QQP) for 512-shot datasets.
