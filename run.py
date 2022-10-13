@@ -10,13 +10,12 @@ import torch
 
 import numpy as np
 
-import transformers
 from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer, EvalPrediction, PreTrainedTokenizerBase
 from transformers import GlueDataTrainingArguments as DataTrainingArguments
 from transformers import HfArgumentParser, TrainingArguments, set_seed
 
 from src.linearhead_trainer import LinearHeadTrainer
-from kernel_trainer import KernelTrainerFunc
+from src.kernel_trainer import KernelTrainerFunc
 from src.dataset import FewShotDataset
 from src.models import ModelForPromptFinetuning, resize_token_type_embeddings
 from src.trainer import Trainer
@@ -24,10 +23,6 @@ from src.processors import processors_mapping, num_labels_mapping, output_modes_
 
 from filelock import FileLock
 from datetime import datetime
-
-from copy import deepcopy
-from tqdm import tqdm
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -236,12 +231,6 @@ class DynamicDataTrainingArguments(DataTrainingArguments):
         metadata={"help": "(DO NOT List of templates (only initialized after the program starts."}
     )
 
-    # kernel arguments
-    kernel_batching_size: int = field(
-        default=1,
-        metadata={'help': 'batch size for batched kernel computation'}
-    )
-
 
 @dataclass
 class DynamicTrainingArguments(TrainingArguments):
@@ -317,13 +306,13 @@ class DynamicTrainingArguments(TrainingArguments):
         default=False,
         metadata={'help': 'configures the output directories to be informative when running W&B sweep'}
     )
-
     kernel_formula: str = field(
-        default='sgd'
+        default='sgd',
+        metadata={"help": "choose kernel formula from {sgd, signgd, asymmetric_signgd}"}
     )
     kernel_solver: str = field(
-        default="lstsq",
-        metadata={"help": "choose kernel solver from {lstsq, svr, svc (only with --binary_classification)}"}
+        default="logistic",
+        metadata={"help": "choose kernel solver from {lstsq, logistic, svr, svc, asym (only for asymmetric_signgd)}"}
     )
     load_kernels: str = field(
         default=None,
@@ -371,7 +360,7 @@ class DynamicTrainingArguments(TrainingArguments):
 @dataclass
 class MyDataCollatorWithPadding:
     """
-    Data collator that will dynamically pad the inputs received.
+    Implements padding for LM-BFF inputs.
     Args:
         tokenizer ([`PreTrainedTokenizer`] or [`PreTrainedTokenizerFast`]):
             The tokenizer used for encoding the data.
@@ -640,7 +629,7 @@ def main():
 
     # Get our special datasets.
     train_dataset = (
-        FewShotDataset(data_args, tokenizer=tokenizer, mode="train", use_demo=("demo" in model_args.few_shot_type), order_by_labels=(training_args.trainer == 'kernel'))
+        FewShotDataset(data_args, tokenizer=tokenizer, mode="train", use_demo=("demo" in model_args.few_shot_type))
     )
     eval_dataset = (
         FewShotDataset(data_args, tokenizer=tokenizer, mode="dev", use_demo=("demo" in model_args.few_shot_type))
@@ -720,14 +709,13 @@ def main():
     }
     trainer_class = trainer_classes[training_args.trainer]
     trainer_kwargs = {}
-    if training_args.trainer == 'kernel':
-        trainer_kwargs['kernel_batching_size'] = data_args.kernel_batching_size
     trainer = trainer_class(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         compute_metrics=build_compute_metrics_fn(data_args.task_name),
+        data_collator=MyDataCollatorWithPadding(tokenizer),
         **trainer_kwargs
     )
 
@@ -791,11 +779,12 @@ def main():
     if training_args.do_predict:
         logging.info("*** Test ***")
         test_datasets = [test_dataset]
-        if data_args.task_name == "mnli":
-            mnli_mm_data_args = dataclasses.replace(data_args, task_name="mnli-mm")
-            test_datasets.append(
-                FewShotDataset(mnli_mm_data_args, tokenizer=tokenizer, mode="test", use_demo=('demo' in model_args.few_shot_type))
-            )
+        ### Don't evaluate on mnli-mm for our purposes
+        # if data_args.task_name == "mnli":
+        #     mnli_mm_data_args = dataclasses.replace(data_args, task_name="mnli-mm")
+        #     test_datasets.append(
+        #         FewShotDataset(mnli_mm_data_args, tokenizer=tokenizer, mode="test", use_demo=('demo' in model_args.few_shot_type))
+        #     )
 
         for test_dataset in test_datasets:
             trainer.compute_metrics = build_compute_metrics_fn(test_dataset.args.task_name)

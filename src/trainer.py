@@ -1,4 +1,4 @@
-########## The following part is copied from Transformers' trainer (3.4.0) ##########
+########## The following part is copied from Transformers' trainer (3.4.0) and later ported to be compatible with v4.4.2 and to support initialization from linear head probing. ##########
 
 # coding=utf-8
 # Copyright 2020-present the HuggingFace Inc. team.

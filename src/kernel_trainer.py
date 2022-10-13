@@ -1,4 +1,4 @@
-########## The following part is copied from Transformers' trainer (3.4.0) ##########
+########## The following part was originally copied from Transformers' trainer (3.4.0) and then changed heavily to compute eNTKs.  ##########
 
 # coding=utf-8
 # Copyright 2020-present the HuggingFace Inc. team.
@@ -15,37 +15,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-The Trainer class, to easily train a 🤗 Transformers from scratch or finetune it on a new task.
+The trainer for computing eNTKs
 """
 
 import os
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-from copy import deepcopy
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import SequentialSampler
 
-from functorch import make_functional, vmap, vjp, jvp, jacrev, make_functional_with_buffers
+from functorch import vmap, jvp, jacrev, make_functional_with_buffers
 
 import transformers
 from transformers.data.data_collator import DataCollator
 from transformers.file_utils import is_torch_tpu_available
 
 from transformers.modeling_utils import PreTrainedModel
-
-from copy import deepcopy
 from transformers.training_args import TrainingArguments
 from transformers.trainer import SequentialDistributedSampler
 from transformers.trainer_utils import PredictionOutput, EvalPrediction
 from transformers.utils import logging
 if is_torch_tpu_available():
     import torch_xla.core.xla_model as xm
-from sklearn.linear_model import LinearRegression, LogisticRegression
 import gc
 from transformers.trainer_utils import TrainOutput
 
@@ -53,17 +47,10 @@ from src.linearhead_trainer import varsize_tensor_all_gather, LinearHeadTrainer
 
 import numpy as np
 from tqdm import tqdm
-from kernel_solvers import LstsqKernelSolver, SVRKernelSolver, SVCKernelSolver, AsymmetricLstsqKernelSolver, LogisticKernelSolver
+from src.kernel_solvers import SOLVERS
 
 logger = logging.get_logger(__name__)
 
-SOLVERS = {
-    "lstsq": LstsqKernelSolver,
-    "svr": SVRKernelSolver,
-    "svc": SVCKernelSolver,
-    "asym": AsymmetricLstsqKernelSolver,
-    "logistic": LogisticKernelSolver
-}
 
 class LogitModelWrapper(nn.Module):
     def __init__(self, model, binary_classification):
@@ -109,7 +96,6 @@ class KernelTrainerFunc(LinearHeadTrainer):
         data_collator: Optional[DataCollator] = None,
         train_dataset: Optional[Dataset] = None,
         eval_dataset: Optional[Dataset] = None,
-        kernel_batching_size: Optional[int] = 0,
         *posargs,
         **kwargs
     ):
@@ -120,7 +106,6 @@ class KernelTrainerFunc(LinearHeadTrainer):
         self.train_targets = None
         self.num_labels = None
 
-        self.kernel_batching_size = kernel_batching_size
         self.kernel_formula = args.kernel_formula
 
         def convert_to_buffer(name):
@@ -220,8 +205,6 @@ class KernelTrainerFunc(LinearHeadTrainer):
         )
 
     def compute_kernel_outer(self, dataset_outer, dataset_inner):
-        from functorch import make_functional, vmap, vjp, jvp, jacrev, make_functional_with_buffers
-
         # Use train_batch_size for outer loop (which is always the training dataset)
         dataloader_outer = self.get_unshuffled_dataloader(dataset_outer, sharded=True, batch_size=self.args.per_device_train_batch_size)
 
@@ -400,8 +383,9 @@ class KernelTrainerFunc(LinearHeadTrainer):
         if self.args.from_linearhead and model_path is None:
             super().train(model_path, dev_objective) # Train output layer using LinearHeadTrainer
 
-        eval_dataset = self.train_dataset
-        self.train_train_kernel, self.train_targets = self.compute_kernel_cached(eval_dataset)
+        if self.args.load_kernels is None:
+            eval_dataset = self.train_dataset
+            self.train_train_kernel, self.train_targets = self.compute_kernel_cached(eval_dataset)
 
         return TrainOutput(0, 0.0, {}), None
 

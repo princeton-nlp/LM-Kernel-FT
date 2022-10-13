@@ -1,24 +1,17 @@
 """Dataset utils for different data settings for GLUE."""
 
 import os
-import copy
 import logging
 import torch
 import numpy as np
 import time
 from filelock import FileLock
 import json
-import itertools
-import random
-import transformers
 from src.processors import processors_mapping, num_labels_mapping, output_modes_mapping, compute_metrics_mapping, median_mapping
 from transformers.data.processors.utils import InputFeatures
-from transformers import DataProcessor, InputExample
 import dataclasses
 from dataclasses import dataclass
 from typing import List, Optional, Union
-from sentence_transformers import SentenceTransformer, util
-from copy import deepcopy
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -221,10 +214,11 @@ def tokenize_multipart_input(
         # If using sentence limit, the total length still exceeds the maximum limit, report a warning
         logger.warn("Input exceeds max_length limit: {}".format(tokenizer.decode(input_ids)))
 
-    while len(input_ids) < max_length:
-        input_ids.append(tokenizer.pad_token_id)
-        attention_mask.append(0)
-        token_type_ids.append(0)
+    ### Code below is commented out, because we use dynamic padding rather than static padding to max_length
+    # while len(input_ids) < max_length:
+    #     input_ids.append(tokenizer.pad_token_id)
+    #     attention_mask.append(0)
+    #     token_type_ids.append(0)
 
     # Truncate
     if len(input_ids) > max_length:
@@ -240,12 +234,11 @@ def tokenize_multipart_input(
 
     # Find mask token
     if prompt:
+        # Make sure that the masked position is inside the max_length
         assert tokenizer.mask_token_id in input_ids, \
             "Mask token not found for input: {} {}".format(input_text_list, input_ids)
         mask_pos = [input_ids.index(tokenizer.mask_token_id)]
-        # Make sure that the masked position is inside the max_length
         assert mask_pos[0] < max_length
-
 
     result = {'input_ids': input_ids, 'attention_mask': attention_mask}
     if 'BERT' in type(tokenizer).__name__:
@@ -262,7 +255,7 @@ def tokenize_multipart_input(
 class FewShotDataset(torch.utils.data.Dataset):
     """Few-shot dataset."""
 
-    def __init__(self, args, tokenizer, cache_dir=None, mode="train", use_demo=False, order_by_labels=False, batch_size=1):
+    def __init__(self, args, tokenizer, cache_dir=None, mode="train", use_demo=False):
         self.args = args
         self.task_name = args.task_name
 
@@ -270,7 +263,6 @@ class FewShotDataset(torch.utils.data.Dataset):
 
         self.tokenizer = tokenizer
         self.mode = mode
-        self.obl = order_by_labels
 
         # If not using demonstrations, use use_demo=True
         self.use_demo = use_demo
@@ -321,15 +313,13 @@ class FewShotDataset(torch.utils.data.Dataset):
 
         # Load cache
         # Cache name distinguishes mode, task name, tokenizer, and length. So if you change anything beyond these elements, make sure to clear your cache.
-        obl_str = f'_batchedkernel_{self.args.kernel_batching_size}' if self.obl else ''
         cached_features_file = os.path.join(
             cache_dir if cache_dir is not None else args.data_dir,
-            "cached_{}_{}_{}_{}{}".format(
+            "cached_{}_{}_{}_{}".format(
                 mode,
                 tokenizer.__class__.__name__,
                 str(args.max_seq_length),
                 args.task_name,
-                obl_str
             ),
         )
 
@@ -403,6 +393,10 @@ class FewShotDataset(torch.utils.data.Dataset):
             for query_idx in range(len(self.query_examples)):
                 # If training, exclude the current example. Else keep all.
                 if self.use_demo and args.demo_filter:
+                    # Need sentence_transformers for demonstrations,
+                    # which is not included in the requirements for us, but see original LM-BFF repo.
+                    from sentence_transformers import SentenceTransformer, util
+
                     # Demonstration filtering
                     candidate = [support_idx for support_idx in support_indices
                                    if support_idx != query_idx or mode != "train"]

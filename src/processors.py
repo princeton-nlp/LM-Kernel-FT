@@ -1,25 +1,10 @@
 """Dataset utils for different data settings for GLUE."""
 
 import os
-import copy
 import logging
-import torch
-import numpy as np
-import time
-from filelock import FileLock
-import json
-import itertools
-import random
-import transformers
-from transformers.data.processors.utils import InputFeatures
 from transformers import DataProcessor, InputExample
 from transformers.data.processors.glue import *
 from transformers.data.metrics import glue_compute_metrics
-import dataclasses
-from dataclasses import dataclass, asdict
-from typing import List, Optional, Union
-from sentence_transformers import SentenceTransformer, util
-from copy import deepcopy
 import pandas as pd
 import logging
 
@@ -468,7 +453,7 @@ class TextClassificationProcessor(DataProcessor):
     """
 
     def __init__(self, task_name):
-        self.task_name = task_name 
+        self.task_name = task_name
 
     def get_example_from_tensor_dict(self, tensor_dict):
         """See base class."""
@@ -478,7 +463,7 @@ class TextClassificationProcessor(DataProcessor):
             None,
             str(tensor_dict["label"].numpy()),
         )
-  
+
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(pd.read_csv(os.path.join(data_dir, "train.csv"), header=None).values.tolist(), "train")
@@ -507,7 +492,7 @@ class TextClassificationProcessor(DataProcessor):
             return list(range(2))
         else:
             raise Exception("task_name not supported.")
-        
+
     def _create_examples(self, lines, set_type):
         """Creates examples for the training, dev and test sets."""
         examples = []
@@ -523,14 +508,14 @@ class TextClassificationProcessor(DataProcessor):
                     text += ' ' + line[2]
                 if not pd.isna(line[3]):
                     text += ' ' + line[3]
-                examples.append(InputExample(guid=guid, text_a=text, short_text=line[1], label=line[0])) 
+                examples.append(InputExample(guid=guid, text_a=text, short_text=line[1], label=line[0]))
             elif self.task_name in ['mr', 'sst-5', 'subj', 'trec', 'cr', 'mpqa']:
                 examples.append(InputExample(guid=guid, text_a=line[1], label=line[0]))
             else:
                 raise Exception("Task_name not supported.")
 
         return examples
-        
+
 def text_classification_metrics(task_name, preds, labels):
     return {"acc": (preds == labels).mean()}
 

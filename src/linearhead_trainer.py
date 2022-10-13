@@ -1,4 +1,4 @@
-########## The following part is copied from Transformers' trainer (3.4.0) ##########
+########## The following part was originally copied from Transformers' trainer (3.4.0) and then changed heavily for linear head probing.  ##########
 
 # coding=utf-8
 # Copyright 2020-present the HuggingFace Inc. team.
@@ -15,24 +15,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-The Trainer class, to easily train a 🤗 Transformers from scratch or finetune it on a new task.
+A trainer for finding linear probing solutions
 """
 
 import collections
-import inspect
-import math
-import os
-import re
-import shutil
-import warnings
 from src.models import ModelForPromptFinetuning
 import torch
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from sklearn.linear_model import LinearRegression, LogisticRegression, LogisticRegressionCV
 
 import transformers
-import numpy as np
 from torch.utils.data.dataset import Dataset
 from transformers.trainer_utils import TrainOutput
 from transformers.utils import logging

@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 from transformers.models.bert.modeling_bert import BertPreTrainedModel, BertModel, BertOnlyMLMHead
 from transformers.models.roberta.modeling_roberta import  RobertaModel, RobertaLMHead
-from transformers.modeling_outputs import SequenceClassifierOutput
 
 import logging
 logger = logging.getLogger(__name__)

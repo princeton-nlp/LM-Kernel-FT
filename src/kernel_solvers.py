@@ -1,12 +1,9 @@
-from tqdm import tqdm
 from transformers.utils import logging
 import torch
 import torch.nn.functional as F
-import numpy as np
 from sklearn.svm import SVC, SVR
 from sklearn.linear_model import LogisticRegressionCV
 logger = logging.get_logger(__name__)
-
 
 class BaseKernelSolver:
     def __init__(self, args):
@@ -289,3 +286,13 @@ class LogisticKernelSolver(BaseKernelSolver):
     def loss(self, preds, targets):
         targets = ((targets + 1) / 2).long() # convert back from {-1, 1} to {0, 1}
         return F.cross_entropy(preds, targets).item()
+
+
+
+SOLVERS = {
+    "lstsq": LstsqKernelSolver,
+    "svr": SVRKernelSolver,
+    "svc": SVCKernelSolver,
+    "asym": AsymmetricLstsqKernelSolver,
+    "logistic": LogisticKernelSolver
+}
