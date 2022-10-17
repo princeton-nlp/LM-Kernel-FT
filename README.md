@@ -16,7 +16,7 @@ pip install -r requirements.txt
 We updated the LM-BFF code to work with a newer version of HuggingFace transformers and additionally require functorch.
 If you would like to run LoRA fine-tuning, install the LoRA version of the transformers library ([see here](https://github.com/microsoft/LoRA/tree/main/examples/NLU)) and add the flags `--apply_lora --lora_alpha .... --lora_r ...` .
 
-<!-- TODO: update requirements -->
+**NOTE**: Different versions of some packages (`pytorch`, `numpy`, `transformers`) may cause minor variations in kernels and results.
 
 ## Prepare the data
 Please run the following commands to download and prepare the data:
@@ -55,15 +55,18 @@ Note that we deleted some tools to do automatic prompt and label search that are
 
  ## Download our pre-computed kernels
 Here are the links for downloading our pre-computed kernels:
-* [SGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/kernels-zipped/roberta-base/sgd.zip)
-* [SignGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/kernels-zipped/roberta-base/signgd.zip)
-* [Asymmetric-SignGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/kernels-zipped/roberta-base/asymmetric_signgd.zip)
+* [SGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/roberta-base/sgd.zip)
+* [SignGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/roberta-base/signgd.zip)
+* [Asymmetric-SignGD kernels](https://nlp.cs.princeton.edu/projects/LM-Kernel-FT/roberta-base/asymmetric_signgd.zip)
 
 The provided kernels were computed with RoBERTa-base for 12 datasets (SST-2, MR, CR, MPQA, Subj, TREC, MNLI, SNLI, QNLI, RTE, MRPC, QQP) over 5 seeds on both 16-shot and 64-shot datasets, where k-shot is the number of training/validation examples per label.
 The SGD kernels also include 6 datasets (SST-2, MR, CR, QNLI, RTE, QQP) for 512-shot datasets.
 
 For each task and data split, we include separate files for training, development, test kernel matrices. Each file can be read using `torch.load` and contains a tuple of (kernel matrix, labels),
 and the kernel matrix has the shape of [training examples, training logits, X examples, X logits], where X dataset is given by the file name (train, dev or test).
+
+## Bugs and questions?
+If you have any questions related to the code or the paper, feel free to email Alexander and Sadhika (`{awettig,smalladi}@cs.princeton.edu`). If you encounter a problem or bug when using the code, you can also open an issue.
 
 ## Citation
 
