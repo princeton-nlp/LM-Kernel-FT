@@ -478,6 +478,8 @@ class TextClassificationProcessor(DataProcessor):
 
     def get_labels(self):
         """See base class."""
+        if self.task_name == "ag_news":
+            return list(range(1,5))
         if self.task_name == "mr":
             return list(range(2))
         elif self.task_name == "sst-5":
@@ -499,7 +501,7 @@ class TextClassificationProcessor(DataProcessor):
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
             if self.task_name == "ag_news":
-                examples.append(InputExample(guid=guid, text_a=line[1] + '. ' + line[2], short_text=line[1] + ".", label=line[0]))
+                examples.append(InputExample(guid=guid, text_a=line[2], label=line[0]))
             elif self.task_name == "yelp_review_full":
                 examples.append(InputExample(guid=guid, text_a=line[1], short_text=line[1], label=line[0]))
             elif self.task_name == "yahoo_answers":
@@ -538,7 +540,8 @@ processors_mapping = {
     "subj": TextClassificationProcessor("subj"),
     "trec": TextClassificationProcessor("trec"),
     "cr": TextClassificationProcessor("cr"),
-    "mpqa": TextClassificationProcessor("mpqa")
+    "mpqa": TextClassificationProcessor("mpqa"),
+    "ag_news": TextClassificationProcessor("ag_news")
 }
 
 num_labels_mapping = {
@@ -557,7 +560,8 @@ num_labels_mapping = {
     "subj": 2,
     "trec": 6,
     "cr": 2,
-    "mpqa": 2
+    "mpqa": 2,
+    "ag_news": 4
 }
 
 output_modes_mapping = {
@@ -577,7 +581,8 @@ output_modes_mapping = {
     "subj": "classification",
     "trec": "classification",
     "cr": "classification",
-    "mpqa": "classification"
+    "mpqa": "classification",
+    "ag_news": "classification"
 }
 
 # Return a function that takes (task_name, preds, labels) as inputs
@@ -599,6 +604,7 @@ compute_metrics_mapping = {
     "trec": text_classification_metrics,
     "cr": text_classification_metrics,
     "mpqa": text_classification_metrics,
+    "ag_news": text_classification_metrics,
 }
 
 # For regression task only: median

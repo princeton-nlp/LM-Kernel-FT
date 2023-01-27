@@ -73,6 +73,15 @@ case $TASK in
         MAPPING="{'not_entailment':'No','entailment':'Yes'}"
         TASK_EXTRA="--max_seq_len 256 --first_sent_limit 240"
         ;;
+    sst-5)
+        TEMPLATE=*cls**sent_0*_It_was*mask*.*sep+*
+        MAPPING="{0:'terrible',1:'bad',2:'okay',3:'good',4:'great'}"
+        ;;
+    ag_news)
+        TEMPLATE=*cls**sent_0*_This_article_is_about*mask*_news.*sep+*
+        MAPPING="{1:'world',2:'sports',3:'business',4:'tech'}"
+        TASK_EXTRA="--max_seq_len 256 --first_sent_limit 240"
+        ;;
 esac
 
 if [ ! -z "$LOAD_KERNELS_TAG" ]; then
